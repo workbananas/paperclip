@@ -5408,6 +5408,65 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(repairs[0].idempotencyKey).toBe(`issue_disposition_repair:${issueId}:${legacyDispositionFingerprint(companyId, issueId, agentId, runId)}:1`);
   });
 
+  it("does not nag a fan-out parent for a disposition while it still has an open child issue", async () => {
+    const { companyId, agentId, runId, issueId } =
+      await seedQueuedIssueRunFixture();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      parentId: issueId,
+      title: "Delegated child issue still in flight",
+      status: "in_progress",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    mockAdapterExecute.mockImplementationOnce(
+      async (ctx: { runId: string }) => {
+        await db.insert(issueComments).values({
+          companyId,
+          issueId,
+          authorAgentId: agentId,
+          createdByRunId: ctx.runId,
+          body: "Delegated the work to a child issue and left the parent in_progress to await it.",
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary:
+            "Delegated the work to a child issue and left the parent in_progress to await it.",
+          provider: "test",
+          model: "test-model",
+        };
+      },
+    );
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const rows = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    const handoffWakeups = rows.filter(
+      (wakeup) => wakeup.reason === "finish_successful_run_handoff",
+    );
+    expect(handoffWakeups).toHaveLength(0);
+
+    const issueRow = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((r) => r[0]);
+    expect(issueRow?.status).toBe("in_progress");
+  });
+
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
     const { companyId, agentId, runId, issueId } =
       await seedQueuedIssueRunFixture();
