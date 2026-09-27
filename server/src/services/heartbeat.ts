@@ -13356,6 +13356,7 @@ export function heartbeatService(
       pendingInteraction,
       pendingApproval,
       explicitBlocker,
+      openChildIssue,
       openRecoveryIssue,
       existingWake,
       budgetBlock,
@@ -13465,6 +13466,21 @@ export function heartbeatService(
             .where(
               and(
                 eq(issues.companyId, issue.companyId),
+                eq(issues.parentId, issue.id),
+                notInArray(issues.status, ["done", "cancelled"]),
+                visibleIssueCondition(),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      issue
+        ? db
+            .select({ id: issues.id })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, issue.companyId),
                 inArray(issues.originKind, [
                   RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
                   RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
@@ -13524,6 +13540,7 @@ export function heartbeatService(
       ),
       hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
       hasExplicitBlockerPath: Boolean(explicitBlocker),
+      hasOpenChildIssues: Boolean(openChildIssue),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
